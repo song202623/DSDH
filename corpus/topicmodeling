@@ -1,0 +1,93 @@
+import os
+import json
+import jieba
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import LatentDirichletAllocation
+
+# ================= 1. 参数设置 =================
+JSON_PATH = r'D:\DSDH\corpus\data.json'
+STOPWORD_PATH = r'D:\DSDH\corpus\stopwords.txt'
+N_TOPICS = 5       # 先设 3 个主题测试，后面可以改 5 测试稳定性
+N_TOP_WORDS = 10
+
+# ================= 2. 读取停用词 =================
+def load_stopwords(path):
+    stopwords = set()
+    if os.path.exists(path):
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                stopwords.add(line.strip())
+    return stopwords
+
+# ================= 3. 读取 JSON 并分词 =================
+def load_and_segment(json_path, stopwords):
+    corpus_texts = []
+    
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    print(f"✅ 成功加载 JSON，共找到 {len(data)} 篇文章。开始提取...\n")
+    
+    for i, article in enumerate(data):
+        # 终极兼容：如果键名带空格，我们就把所有的键名去掉空格再找
+        clean_article = {k.strip(): v for k, v in article.items()}
+        
+        # 尝试提取 full_text
+        text = clean_article.get('full_text', '')
+        
+        # 如果没有 full_text，尝试从 paragraphs 列表拼接
+        if not text:
+            paragraphs = clean_article.get('paragraphs', [])
+            if isinstance(paragraphs, list):
+                text = "".join([str(p) for p in paragraphs])
+        
+        title = clean_article.get('title', f'文章{i+1}')
+        
+        # 如果还是空，直接打印键名给你看，方便你排查
+        if not text.strip():
+            print(f"⚠️ 文章《{title}》没提取到内容。该文章包含的键名有: {list(clean_article.keys())}")
+            continue
+            
+        # 分词与清洗
+        words = jieba.lcut(text)
+        cleaned_words = [w.strip() for w in words if w.strip() and w.strip() not in stopwords and len(w.strip()) > 1 and not w.strip().isdigit()]
+        
+        print(f"✅ 成功提取《{title}》，词例: {cleaned_words[:5]}...")
+        corpus_texts.append(" ".join(cleaned_words))
+                
+    return corpus_texts
+
+# ================= 4. TF-IDF 与 LDA 主题建模 =================
+def run_topic_modeling(corpus_texts):
+    if not corpus_texts:
+        print("\n❌ 致命错误：没有提取到任何文本，无法建模。")
+        return
+
+    vectorizer = TfidfVectorizer(max_df=0.95, min_df=1, max_features=1000, token_pattern=r"(?u)\b\w+\b")
+    tfidf_matrix = vectorizer.fit_transform(corpus_texts)
+    
+    feature_names = vectorizer.get_feature_names_out()
+    tfidf_sums = tfidf_matrix.sum(axis=0).A1
+    top_tfidf_indices = tfidf_sums.argsort()[::-1][:20]
+    
+    print("\n================ 全局 TF-IDF 高权重词 ================")
+    print(", ".join([feature_names[i] for i in top_tfidf_indices]))
+    
+    lda = LatentDirichletAllocation(n_components=N_TOPICS, random_state=42, max_iter=50)
+    lda.fit(tfidf_matrix)
+    
+    print(f"\n================ LDA 主题建模结果（主题数={N_TOPICS}） ================")
+    for topic_idx, topic in enumerate(lda.components_):
+        top_features_ind = topic.argsort()[:-N_TOP_WORDS - 1:-1]
+        top_features = [feature_names[i] for i in top_features_ind]
+        print(f"主题 {topic_idx + 1}: {' | '.join(top_features)}")
+
+# ================= 5. 主程序执行 =================
+if __name__ == '__main__':
+    stopwords = load_stopwords(STOPWORD_PATH)
+    
+    # 修复了旧版代码遗留的解包报错
+    corpus_texts = load_and_segment(JSON_PATH, stopwords)
+    
+    print(f"\n处理完毕，最终参与计算的文章数: {len(corpus_texts)}")
+    run_topic_modeling(corpus_texts)
